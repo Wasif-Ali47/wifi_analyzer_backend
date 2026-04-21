@@ -114,7 +114,7 @@ app.use("/api/app-promos", appPromoRouter);
 app.use("/api/admin/auth", adminAuthRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/admin/app-promos", adminPromoRouter);
-// gsd
+// gsdd
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
