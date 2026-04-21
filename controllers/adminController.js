@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const User = require("../models/usersModel");
+const PushDeviceToken = require("../models/pushDeviceTokenModel");
 const { ensureFirebaseAdmin } = require("../utils/firebaseAdminInit");
 
 async function getUsers(req, res) {
@@ -240,6 +241,13 @@ async function broadcastNotification(req, res) {
         if (device?.token) {
           uniqueTokens.add(device.token);
         }
+      }
+    }
+
+    const standaloneRows = await PushDeviceToken.find({ isActive: true }).select("token").lean();
+    for (const row of standaloneRows) {
+      if (row?.token) {
+        uniqueTokens.add(row.token);
       }
     }
 

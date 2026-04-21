@@ -25,6 +25,8 @@ const defaultAllowedOrigins = [
   "http://localhost:3000",
   "https://aipromptgenerator.oxmite.com",
   "https://prompt-creator-admin.oxmite.com",
+  // prompt_creator_admin package.json homepage (GitHub Pages)
+  "https://wasif-ali47.github.io",
 ];
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
@@ -83,7 +85,8 @@ app.get("/", (req, res) => {
       list: "GET /api/prompts",
       getOne: "GET /api/prompts/:id",
       notifications: {
-        registerToken: "POST /api/notifications/register-token",
+        registerToken:
+          "POST /api/notifications/register-token (token required; userId optional string or Mongo id; JWT optional)",
         send: "POST /api/notifications/send",
       },
       promos: {

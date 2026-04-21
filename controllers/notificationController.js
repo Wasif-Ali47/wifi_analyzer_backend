@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const User = require("../models/usersModel");
+const PushDeviceToken = require("../models/pushDeviceTokenModel");
 const { ensureFirebaseAdmin } = require("../utils/firebaseAdminInit");
 
 function buildDeviceInfo(deviceInfo) {
@@ -12,14 +13,36 @@ function buildDeviceInfo(deviceInfo) {
   };
 }
 
+async function upsertStandaloneToken({ token, labelUserId, deviceType, deviceInfo }) {
+  await PushDeviceToken.findOneAndUpdate(
+    { token },
+    {
+      $set: {
+        token,
+        userId: labelUserId || null,
+        deviceType,
+        deviceInfo,
+        isActive: true,
+        registeredAt: new Date(),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+}
+
+/**
+ * POST /api/notifications/register-token
+ * - admin-service style: only [token] is required; optional string [userId] (e.g. "guest_user").
+ * - If Bearer JWT matches a user, token is stored on that User (Mongo).
+ * - Else if [userId] is a valid ObjectId and a User exists, token is stored on that User.
+ * - Else token is stored in PushDeviceToken (standalone broadcast list).
+ */
 async function registerToken(req, res) {
   try {
     const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
     const deviceType = typeof req.body?.deviceType === "string" ? req.body.deviceType.trim() : "unknown";
     const deviceInfo = buildDeviceInfo(req.body?.deviceInfo);
-    const fromAuth = req.authUser?._id ? req.authUser._id.toString() : null;
-    const fromBody = req.body?.userId;
-    const targetUserId = fromAuth || (typeof fromBody === "string" ? fromBody.trim() : "");
+    const bodyUserIdRaw = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
 
     if (!token) {
       return res.status(400).json({
@@ -27,49 +50,71 @@ async function registerToken(req, res) {
         message: "token is required",
       });
     }
-    if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Valid userId is required (or pass authenticated token)",
-      });
+
+    const authUser = req.authUser && req.authUser._id ? req.authUser : null;
+    let mongoUser = authUser;
+
+    if (!mongoUser && bodyUserIdRaw && mongoose.Types.ObjectId.isValid(bodyUserIdRaw)) {
+      const u = await User.findById(bodyUserIdRaw);
+      if (u && !u.isBanned) {
+        mongoUser = u;
+      }
     }
 
-    const user = await User.findById(targetUserId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-    if (user.isBanned) {
-      return res.status(403).json({
-        success: false,
-        message: "Banned users cannot register device tokens",
-      });
-    }
+    if (mongoUser) {
+      if (mongoUser.isBanned) {
+        return res.status(403).json({
+          success: false,
+          message: "Banned users cannot register device tokens",
+        });
+      }
 
-    const existingIndex = (user.deviceTokens || []).findIndex((d) => d.token === token);
-    if (existingIndex >= 0) {
-      user.deviceTokens[existingIndex].deviceType = deviceType || user.deviceTokens[existingIndex].deviceType;
-      user.deviceTokens[existingIndex].deviceInfo = {
-        ...user.deviceTokens[existingIndex].deviceInfo,
-        ...deviceInfo,
-      };
-      user.deviceTokens[existingIndex].registeredAt = new Date();
-    } else {
-      user.deviceTokens.push({
+      const existingIndex = (mongoUser.deviceTokens || []).findIndex((d) => d.token === token);
+      if (existingIndex >= 0) {
+        mongoUser.deviceTokens[existingIndex].deviceType =
+          deviceType || mongoUser.deviceTokens[existingIndex].deviceType;
+        mongoUser.deviceTokens[existingIndex].deviceInfo = {
+          ...mongoUser.deviceTokens[existingIndex].deviceInfo,
+          ...deviceInfo,
+        };
+        mongoUser.deviceTokens[existingIndex].registeredAt = new Date();
+      } else {
+        mongoUser.deviceTokens.push({
+          token,
+          deviceType,
+          deviceInfo,
+          registeredAt: new Date(),
+        });
+      }
+
+      await mongoUser.save();
+
+      try {
+        await PushDeviceToken.deleteOne({ token });
+      } catch (e) {
+        console.warn("[notification:registerToken] standalone cleanup skipped:", e.message);
+      }
+
+      return res.json({
+        success: true,
+        message: "Device token registered successfully",
+        storage: "user",
+        userId: mongoUser._id.toString(),
         token,
-        deviceType,
-        deviceInfo,
-        registeredAt: new Date(),
       });
     }
 
-    await user.save();
-    return res.json({
+    await upsertStandaloneToken({
+      token,
+      labelUserId: bodyUserIdRaw || null,
+      deviceType,
+      deviceInfo,
+    });
+
+    return res.status(201).json({
       success: true,
       message: "Device token registered successfully",
-      userId: user._id.toString(),
+      storage: "standalone",
       token,
     });
   } catch (error) {
