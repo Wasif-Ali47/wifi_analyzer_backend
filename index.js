@@ -11,6 +11,7 @@ const adminAuthRouter = require("./routes/adminAuthRoutes");
 const notificationRouter = require("./routes/notificationRoutes");
 const appPromoRouter = require("./routes/appPromoRoutes");
 const adminPromoRouter = require("./routes/adminPromoRoutes");
+const chatRouter = require("./routes/chatRoutes");
 const { ensureFirebaseAdmin } = require("./utils/firebaseAdminInit");
 
 const mongoUri = process.env.MONGODB_URI;
@@ -69,7 +70,7 @@ app.use((req, res, next) => {
 
 app.get("/", (req, res) => {
   res.json({
-    service: "AI prompt generator",
+    service: "AI Wifi Analyzer",
     endpoints: {
       auth: {
         signup: "POST /auth/signup",
@@ -93,6 +94,16 @@ app.get("/", (req, res) => {
         list: "GET /api/app-promos",
         getOne: "GET /api/app-promos/:id",
       },
+      chat: {
+        guest: "POST /api/chat/guest (no auth)",
+        respond: "POST /api/chat/respond (auth, auto-creates session)",
+        createSession: "POST /api/chat/sessions",
+        listSessions: "GET /api/chat/sessions",
+        getSession: "GET /api/chat/sessions/:id",
+        addMessages: "POST /api/chat/sessions/:id/messages",
+        updateSession: "PATCH /api/chat/sessions/:id",
+        deleteSession: "DELETE /api/chat/sessions/:id",
+      },
       admin: {
         login: "POST /api/admin/auth/login",
         users: "GET /api/admin/users",
@@ -114,6 +125,7 @@ app.use("/api/app-promos", appPromoRouter);
 app.use("/api/admin/auth", adminAuthRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/admin/app-promos", adminPromoRouter);
+app.use("/api/chat", chatRouter);
 // gsdd
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
