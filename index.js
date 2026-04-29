@@ -23,7 +23,7 @@ if (!mongoUri) {
 const app = express();
 const port = Number(process.env.PORT) || 8000;
 const defaultAllowedOrigins = [
-  
+  "https://adminofwifianalyzer.oxmite.com"
 ];
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
