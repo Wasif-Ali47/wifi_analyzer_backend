@@ -16,6 +16,35 @@ Help users with:
 Be concise, practical, and friendly. Use plain language unless the user clearly wants technical depth.
 Limit responses to 3–5 short paragraphs unless a longer explanation is genuinely needed.`;
 
+/**
+ * Builds the full system prompt, injecting live device/WiFi data when available.
+ * The injected block explicitly instructs the model to use the data rather than
+ * claiming it cannot access device information.
+ */
+function buildSystemPrompt(deviceContext) {
+  if (!deviceContext || typeof deviceContext !== "string" || !deviceContext.trim()) {
+    return CHAT_SYSTEM_PROMPT;
+  }
+
+  return `${CHAT_SYSTEM_PROMPT}
+
+════════════════════════════════════════
+LIVE DEVICE & NETWORK DATA
+════════════════════════════════════════
+The WiFi Analyzer app has already read the following data directly from the user's device with their explicit consent. This is real, current data — not hypothetical.
+
+${deviceContext.trim()}
+
+════════════════════════════════════════
+HOW TO USE THIS DATA
+════════════════════════════════════════
+• NEVER say you cannot access device data, read WiFi info, or check network details — you already have all of it above.
+• Treat every value above as ground truth for this conversation.
+• Refer to specific values (SSID name, exact dBm reading, link speed, band, IP, nearby networks, device model) in your answer.
+• Give targeted, personalised advice based on this exact setup rather than generic tips.
+• If the user asks "what is my signal strength / speed / IP / etc.", read the answer directly from the data above and state it confidently.`;
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 function isValidId(id) {
@@ -42,16 +71,24 @@ function getModel() {
   return (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 }
 
-async function callOpenAI(messages) {
+async function callOpenAI(messages, deviceContext) {
   let client;
   try {
     client = getChatClient();
   } catch (e) {
     throw e;
   }
+
+  const systemPrompt = buildSystemPrompt(deviceContext);
+  console.log("[callOpenAI] model:", getModel());
+  console.log("[callOpenAI] deviceContext provided:", !!deviceContext);
+  console.log("[callOpenAI] system prompt length:", systemPrompt.length);
+  console.log("[callOpenAI] system prompt:\n", systemPrompt);
+  console.log("[callOpenAI] messages:", JSON.stringify(messages, null, 2));
+
   const completion = await client.chat.completions.create({
     model: getModel(),
-    messages: [{ role: "system", content: CHAT_SYSTEM_PROMPT }, ...messages],
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
     temperature: 0.7,
     max_tokens: 1024,
   });
@@ -66,7 +103,7 @@ async function callOpenAI(messages) {
  * Body: { messages: [{ role: "user"|"assistant", content: string }, ...] }
  */
 async function handleGuestChat(req, res) {
-  const { messages } = req.body;
+  const { messages, deviceContext } = req.body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: "messages array is required" });
@@ -84,9 +121,12 @@ async function handleGuestChat(req, res) {
 
   const payload = messages.map((m) => ({ role: m.role, content: m.content.trim() }));
 
+  console.log("[chat guest] request — messages:", payload.length, "| deviceContext:", !!deviceContext);
+  if (deviceContext) console.log("[chat guest] deviceContext:\n", deviceContext);
+
   let reply;
   try {
-    reply = await callOpenAI(payload);
+    reply = await callOpenAI(payload, deviceContext);
   } catch (err) {
     if (err.statusCode === 503) return res.status(503).json({ error: err.message });
     const msg = err?.error?.message || err?.message || "OpenAI request failed";
@@ -95,6 +135,7 @@ async function handleGuestChat(req, res) {
   }
 
   if (!reply) return res.status(502).json({ error: "Empty response from model" });
+  console.log("[chat guest] reply length:", reply.length);
   return res.json({ reply });
 }
 
@@ -114,6 +155,13 @@ async function handleRespond(req, res) {
   if (!content) return res.status(400).json({ error: "content is required" });
 
   const sessionId = req.body.sessionId;
+  const deviceContext =
+    typeof req.body.deviceContext === "string" && req.body.deviceContext.trim()
+      ? req.body.deviceContext.trim()
+      : null;
+
+  console.log("[chat respond] userId:", userId, "| sessionId:", sessionId, "| deviceContext:", !!deviceContext);
+  if (deviceContext) console.log("[chat respond] deviceContext:\n", deviceContext);
 
   let session;
   try {
@@ -150,7 +198,7 @@ async function handleRespond(req, res) {
 
   let reply;
   try {
-    reply = await callOpenAI(history);
+    reply = await callOpenAI(history, deviceContext);
   } catch (err) {
     if (err.statusCode === 503) return res.status(503).json({ error: err.message });
     const msg = err?.error?.message || err?.message || "OpenAI request failed";

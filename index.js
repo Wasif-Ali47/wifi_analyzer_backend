@@ -23,11 +23,7 @@ if (!mongoUri) {
 const app = express();
 const port = Number(process.env.PORT) || 8000;
 const defaultAllowedOrigins = [
-  "http://localhost:3000",
-  "https://aipromptgenerator.oxmite.com",
-  "https://prompt-creator-admin.oxmite.com",
-  // prompt_creator_admin package.json homepage (GitHub Pages)
-  "https://wasif-ali47.github.io",
+  
 ];
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
