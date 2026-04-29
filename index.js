@@ -122,7 +122,7 @@ app.use("/api/admin/auth", adminAuthRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/admin/app-promos", adminPromoRouter);
 app.use("/api/chat", chatRouter);
-// gsdd
+// gsddh
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
