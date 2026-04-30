@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const User = require("../models/usersModel");
 const PushDeviceToken = require("../models/pushDeviceTokenModel");
+const ChatUsage = require("../models/chatUsageModel");
 const { ensureFirebaseAdmin } = require("../utils/firebaseAdminInit");
 
 async function getUsers(req, res) {
@@ -297,10 +298,220 @@ async function broadcastNotification(req, res) {
   }
 }
 
+async function getChatUsageOverview(req, res) {
+  try {
+    const agg = await ChatUsage.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalRequests: { $sum: 1 },
+          authenticatedRequests: {
+            $sum: { $cond: [{ $eq: ["$requestType", "authenticated"] }, 1, 0] },
+          },
+          guestRequests: {
+            $sum: { $cond: [{ $eq: ["$requestType", "guest"] }, 1, 0] },
+          },
+          totalPromptTokens: { $sum: { $ifNull: ["$usage.promptTokens", 0] } },
+          totalCompletionTokens: { $sum: { $ifNull: ["$usage.completionTokens", 0] } },
+          totalTokens: { $sum: { $ifNull: ["$usage.totalTokens", 0] } },
+        },
+      },
+    ]);
+
+    const summary = agg[0] || {
+      totalRequests: 0,
+      authenticatedRequests: 0,
+      guestRequests: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      totalTokens: 0,
+    };
+
+    // Get top users by chat token usage
+    const topChatUsers = await ChatUsage.aggregate([
+      {
+        $match: { userId: { $exists: true, $ne: null } },
+      },
+      {
+        $group: {
+          _id: "$userId",
+          requestCount: { $sum: 1 },
+          promptTokens: { $sum: { $ifNull: ["$usage.promptTokens", 0] } },
+          completionTokens: { $sum: { $ifNull: ["$usage.completionTokens", 0] } },
+          totalTokens: { $sum: { $ifNull: ["$usage.totalTokens", 0] } },
+          lastUsedAt: { $max: "$createdAt" },
+        },
+      },
+      { $sort: { totalTokens: -1 } },
+      { $limit: 20 },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "user",
+        },
+      },
+    ]);
+
+    const topUsers = topChatUsers.map((item) => ({
+      userId: item._id,
+      name: item.user?.[0]?.name || "",
+      email: item.user?.[0]?.email || "",
+      requestCount: item.requestCount,
+      promptTokens: item.promptTokens,
+      completionTokens: item.completionTokens,
+      totalTokens: item.totalTokens,
+      lastUsedAt: item.lastUsedAt,
+    }));
+
+    return res.json({
+      success: true,
+      summary,
+      topUsers,
+    });
+  } catch (error) {
+    console.error("[admin:getChatUsageOverview] error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch chat usage overview",
+      error: error.message,
+    });
+  }
+}
+
+async function getUserChatUsage(req, res) {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user id",
+      });
+    }
+
+    const user = await User.findById(userId).select("name email");
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const usageStats = await ChatUsage.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: null,
+          requestCount: { $sum: 1 },
+          promptTokens: { $sum: { $ifNull: ["$usage.promptTokens", 0] } },
+          completionTokens: { $sum: { $ifNull: ["$usage.completionTokens", 0] } },
+          totalTokens: { $sum: { $ifNull: ["$usage.totalTokens", 0] } },
+          firstRequestAt: { $min: "$createdAt" },
+          lastRequestAt: { $max: "$createdAt" },
+        },
+      },
+    ]);
+
+    const stats = usageStats[0] || {
+      requestCount: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      firstRequestAt: null,
+      lastRequestAt: null,
+    };
+
+    // Get recent chat requests
+    const recentRequests = await ChatUsage.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    return res.json({
+      success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+      },
+      stats,
+      recentRequests: recentRequests.map((req) => ({
+        id: req._id,
+        sessionId: req.sessionId,
+        model: req.model,
+        promptTokens: req.usage?.promptTokens || 0,
+        completionTokens: req.usage?.completionTokens || 0,
+        totalTokens: req.usage?.totalTokens || 0,
+        createdAt: req.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error("[admin:getUserChatUsage] error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch user chat usage",
+      error: error.message,
+    });
+  }
+}
+
+async function getGuestChatStats(req, res) {
+  try {
+    const stats = await ChatUsage.aggregate([
+      { $match: { requestType: "guest" } },
+      {
+        $group: {
+          _id: null,
+          totalRequests: { $sum: 1 },
+          totalPromptTokens: { $sum: { $ifNull: ["$usage.promptTokens", 0] } },
+          totalCompletionTokens: { $sum: { $ifNull: ["$usage.completionTokens", 0] } },
+          totalTokens: { $sum: { $ifNull: ["$usage.totalTokens", 0] } },
+          firstRequestAt: { $min: "$createdAt" },
+          lastRequestAt: { $max: "$createdAt" },
+        },
+      },
+    ]);
+
+    const summary = stats[0] || {
+      totalRequests: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      totalTokens: 0,
+      firstRequestAt: null,
+      lastRequestAt: null,
+    };
+
+    // Get average tokens per request
+    const avgTokens =
+      summary.totalRequests > 0
+        ? Math.round(summary.totalTokens / summary.totalRequests)
+        : 0;
+
+    return res.json({
+      success: true,
+      summary: {
+        ...summary,
+        averageTokensPerRequest: avgTokens,
+      },
+    });
+  } catch (error) {
+    console.error("[admin:getGuestChatStats] error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch guest chat statistics",
+      error: error.message,
+    });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
   setUserBanState,
   getUsageOverview,
   broadcastNotification,
+  getChatUsageOverview,
+  getUserChatUsage,
+  getGuestChatStats,
 };

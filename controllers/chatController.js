@@ -1,6 +1,8 @@
 const mongoose = require("mongoose");
 const OpenAI = require("openai");
 const ChatSession = require("../models/chatModel");
+const ChatUsage = require("../models/chatUsageModel");
+const User = require("../models/usersModel");
 const { NETWORK_ERROR, INVALID_ID, NOT_FOUND } = require("../messages/message");
 
 // ── constants ──────────────────────────────────────────────────────────────
@@ -87,7 +89,15 @@ async function callOpenAI(messages, deviceContext) {
     temperature: 0.7,
     max_tokens: 1024,
   });
-  return completion.choices?.[0]?.message?.content?.trim() || "";
+  
+  const reply = completion.choices?.[0]?.message?.content?.trim() || "";
+  const usage = {
+    promptTokens: Number(completion?.usage?.prompt_tokens) || 0,
+    completionTokens: Number(completion?.usage?.completion_tokens) || 0,
+    totalTokens: Number(completion?.usage?.total_tokens) || 0,
+  };
+  
+  return { reply, usage };
 }
 
 // ── guest ──────────────────────────────────────────────────────────────────
@@ -119,9 +129,9 @@ async function handleGuestChat(req, res) {
   console.log("[chat guest] request — messages:", payload.length, "| deviceContext:", !!deviceContext);
   if (deviceContext) console.log("[chat guest] deviceContext:\n", deviceContext);
 
-  let reply;
+  let result;
   try {
-    reply = await callOpenAI(payload, deviceContext);
+    result = await callOpenAI(payload, deviceContext);
   } catch (err) {
     if (err.statusCode === 503) return res.status(503).json({ error: err.message });
     const msg = err?.error?.message || err?.message || "OpenAI request failed";
@@ -129,7 +139,23 @@ async function handleGuestChat(req, res) {
     return res.status(502).json({ error: msg });
   }
 
+  const { reply, usage } = result;
   if (!reply) return res.status(502).json({ error: "Empty response from model" });
+  
+  // Track guest chat usage
+  try {
+    await ChatUsage.create({
+      userId: null,
+      sessionId: null,
+      requestType: "guest",
+      model: getModel(),
+      usage,
+    });
+  } catch (usageErr) {
+    console.error("[chat guest] usage tracking failed:", usageErr.message);
+    // Don't fail the response if tracking fails
+  }
+  
   console.log("[chat guest] reply length:", reply.length);
   return res.json({ reply });
 }
@@ -191,9 +217,9 @@ async function handleRespond(req, res) {
     content: m.content,
   }));
 
-  let reply;
+  let result;
   try {
-    reply = await callOpenAI(history, deviceContext);
+    result = await callOpenAI(history, deviceContext);
   } catch (err) {
     if (err.statusCode === 503) return res.status(503).json({ error: err.message });
     const msg = err?.error?.message || err?.message || "OpenAI request failed";
@@ -201,6 +227,7 @@ async function handleRespond(req, res) {
     return res.status(502).json({ error: msg });
   }
 
+  const { reply, usage } = result;
   if (!reply) return res.status(502).json({ error: "Empty response from model" });
 
   // Append AI reply and persist
@@ -210,6 +237,38 @@ async function handleRespond(req, res) {
   } catch (err) {
     console.error("[chat respond] save assistant msg:", err);
     // Reply was generated — still return it even if save failed
+  }
+  
+  // Track chat usage for authenticated user
+  try {
+    await ChatUsage.create({
+      userId,
+      sessionId: session._id,
+      requestType: "authenticated",
+      model: getModel(),
+      usage,
+    });
+    
+    // Update user's total OpenAI usage stats
+    if (userId) {
+      await User.updateOne(
+        { _id: userId },
+        {
+          $inc: {
+            "openAiUsage.promptTokens": usage.promptTokens,
+            "openAiUsage.completionTokens": usage.completionTokens,
+            "openAiUsage.totalTokens": usage.totalTokens,
+            "openAiUsage.requestCount": 1,
+          },
+          $set: {
+            "openAiUsage.lastUsedAt": new Date(),
+          },
+        }
+      );
+    }
+  } catch (usageErr) {
+    console.error("[chat respond] usage tracking failed:", usageErr.message);
+    // Don't fail the response if tracking fails
   }
 
   return res.json({
