@@ -16,11 +16,6 @@ Help users with:
 Be concise, practical, and friendly. Use plain language unless the user clearly wants technical depth.
 Limit responses to 3–5 short paragraphs unless a longer explanation is genuinely needed.`;
 
-/**
- * Builds the full system prompt, injecting live device/WiFi data when available.
- * The injected block explicitly instructs the model to use the data rather than
- * claiming it cannot access device information.
- */
 function buildSystemPrompt(deviceContext) {
   if (!deviceContext || typeof deviceContext !== "string" || !deviceContext.trim()) {
     return CHAT_SYSTEM_PROMPT;
